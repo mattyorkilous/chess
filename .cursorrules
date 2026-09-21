@@ -1,0 +1,21 @@
+{
+  "rules": {    
+    "coding_style": {
+      "description": "Guidelines for maintaining consistent coding style.",
+      
+      "enabled": true,
+      
+      "rules": [
+        {
+          "description": "Prefer list comprehensions and `reduce` over loops."
+        },
+        {
+          "description": "Comments should describe purpose, not effect."
+        },
+        {
+          "description": "Prioritize modularity, DRY principles, and performance."
+        }
+      ]
+    }
+  }
+}
