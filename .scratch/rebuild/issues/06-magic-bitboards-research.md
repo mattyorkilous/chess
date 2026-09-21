@@ -1,7 +1,7 @@
 # Magic bitboard generation approach
 
 Type: research
-Status: open
+Status: resolved
 Blocked by: —
 Parent: ../map.md
 
@@ -26,3 +26,51 @@ from primary sources (Chess Programming Wiki, reference implementations).
 - How the generated tables get stored: a generated `.py` module, JSON, or binary.
 
 Findings land in a Markdown file in the repo, linked from the answer.
+
+## Answer
+
+Findings, with measured numbers: [`docs/research/magic-bitboards.md`](../../../docs/research/magic-bitboards.md)
+
+All timings CPython 3.14.7 / arm64 macOS, best-of-N over 300k random (square, occupancy) pairs.
+
+- **Variant: fancy magics.** Plain costs 2.7x the table (294,912 vs 107,648 slots) to save a
+  per-square shift lookup that is a few ns in CPython. Black magic saves 19,332 slots — in
+  CPython that is ~150 KiB of pointer array, not 150 KiB of L1 — and costs either lifted
+  constants or an NP-hard packing search. **PEXT is a BMI2 hardware instruction with no CPython
+  route at all; discarded.** (Corroboration: Stockfish master no longer has a PEXT path either.)
+- **Generation: trial-and-error, sparse randoms (AND of three `getrandbits(64)`), Stockfish's
+  `popcount((magic*mask) >> 56) >= 6` pre-filter, and the epoch trick instead of clearing the
+  table.** Measured **21.0 s** for the full 64+64 set in pure Python (29.3 s without the epoch
+  trick), round-trip verified, 0 failures. Fix the seed so regeneration is byte-identical.
+- **Generate, don't lift.** 21 s once beats inheriting a licence. For the record: Kannan's
+  `magicmoves.h` is zlib (notice must travel), Stockfish and python-chess are GPL-3.0 (viral,
+  and neither ships constants anyway), cozy-chess and magic-bits are MIT, and Annuss's black
+  magics were posted to a TalkChess thread with no licence statement at all.
+- **Shape: `tuple[tuple[int, ...], ...]`, one inner tuple per square**, with parallel
+  `MASK`/`MAGIC`/`SHIFT` tuples. 230.6 ns/lookup and ~1.0 MiB live. Nested list is identical in
+  speed but 4x the `.pyc`; flat+offset is 15% slower (266 ns); `array('Q')` is 318 ns.
+  The C reasoning does not transfer: a Python table is a `PyObject*` array with the ints on the
+  heap, so cache lines are not the variable — bytecode ops per lookup and *int object count* are.
+  Only 4,900 distinct rook attack sets exist among 102,400 slots, so whether the loader shares
+  those ints is worth 4x the memory.
+- **Masking: `& 0xFFFF_FFFF_FFFF_FFFF` exactly once, right after the multiply.** Needed after
+  `*`, `<<`, `+` and any subtraction that can go negative; **not** needed after `&`, `|`, `^`,
+  `>>`. Omitting it is not a subtle bug — measured, it raises `IndexError` (a 120-bit product
+  shifted by 52 leaves a ~68-bit index). Costs ~41 ns, ~20% of a lookup. Masking after the shift
+  instead (`>> SHIFT & SIZEMASK`) is arithmetically identical and measured the same, so keep the
+  conventional form.
+- **Storage: a generated `.py` module of nested tuples.** 575 KiB `.pyc`, **1.56 ms** warm
+  import, 1,050 KiB live, and the compiler deduplicates the ints down to 6,326 objects.
+  JSON is 12.0 ms and 4x the memory, pickle 6.3 ms, marshal 4.5 ms — all three build 107,648
+  separate int objects. Writing **tuples not lists** is the whole trick: a tuple literal is one
+  marshalled constant (575 KiB `.pyc`) while the same data as a list literal compiles to
+  per-element `LOAD_CONST` bytecode (2,345 KiB `.pyc`, 2.44 ms). Cold first import (no `.pyc`)
+  is a one-off 184 ms; don't engineer around it, don't commit `.pyc`.
+
+**One caveat worth carrying forward.** Magics are not the fastest slider lookup in CPython. A
+plain `dict[masked_occ] -> attacks` per square measured **172.6 ns vs 230.9 ns** — the magic
+index arithmetic alone is 211.5 ns of that 230.9, the table read is nearly free. Its cost is
+memory (10 MiB). python-chess (Fiekas — the same author credited with black magics) uses no
+magics at all: split rank/file/diagonal dicts, 10,368 entries built at import in 14 ms, 472 KiB,
+289 ns. Magics are the middle of that three-way trade. If perft disappoints later, the dict
+shape is the thing to try, not a fancier magic.
